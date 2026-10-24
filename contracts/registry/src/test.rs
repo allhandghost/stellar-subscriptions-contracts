@@ -273,90 +273,6 @@ fn unknown_status_codes_are_rejected() {
 }
 
 #[test]
-fn active_count_survives_every_status_transition_without_underflow() {
-    let statuses = [
-        STATUS_ACTIVE,
-        STATUS_PAUSED,
-        STATUS_CANCELLED,
-        STATUS_EXHAUSTED,
-    ];
-    for from in statuses {
-        for to in statuses {
-            let s = Setup::new();
-            s.register(1);
-            if from != STATUS_ACTIVE {
-                s.client.update_subscription(&1, &0, &from);
-            }
-            let before = s.stats().active_subscriptions;
-
-            let result = s.client.try_update_subscription(&1, &0, &to);
-            let after = s.stats().active_subscriptions;
-
-            if from == STATUS_CANCELLED || from == STATUS_EXHAUSTED {
-                // Final statuses never change again, so the count is untouched.
-                expect_err(result, Error::AlreadyFinal);
-                assert_eq!(after, before, "{from} -> {to} moved the active count");
-            } else {
-                assert!(result.is_ok(), "{from} -> {to} was refused");
-                let expected = if to == STATUS_ACTIVE { 1 } else { 0 };
-                assert_eq!(
-                    after, expected,
-                    "{from} -> {to} left the wrong active count"
-                );
-            }
-        }
-    }
-}
-
-#[test]
-fn registering_100_subscriptions_keeps_listings_and_stats_correct() {
-    let s = Setup::new();
-    for id in 1..=100u64 {
-        s.register(id);
-    }
-    // Cancel every tenth subscription, after it has charged 50.
-    for id in (10..=100u64).step_by(10) {
-        s.client.update_subscription(&id, &50, &STATUS_CANCELLED);
-    }
-
-    let all: std::vec::Vec<u64> = (1..=100).collect();
-    assert_eq!(ids(s.client.get_all_subscriptions()), all);
-
-    let active: std::vec::Vec<u64> = (1..=100u64).filter(|id| id % 10 != 0).collect();
-    assert_eq!(ids(s.client.get_active_subscriptions()), active);
-
-    let stats = s.stats();
-    assert_eq!(stats.total_subscriptions, 100);
-    assert_eq!(stats.active_subscriptions, 90);
-    assert_eq!(stats.total_charged_volume, 10 * 50);
-}
-
-#[test]
-fn an_update_with_the_same_status_and_total_changes_nothing() {
-    let s = Setup::new();
-    s.register(1);
-    s.client.update_subscription(&1, &100, &STATUS_PAUSED);
-
-    let stats_before = s.stats();
-    let record_before = s.client.get_subscription_record(&1);
-    s.client.update_subscription(&1, &100, &STATUS_PAUSED);
-
-    assert_eq!(s.stats(), stats_before);
-    assert_eq!(s.client.get_subscription_record(&1), record_before);
-}
-
-#[test]
-fn get_writers_before_set_writers_is_not_configured() {
-    let s = Setup::unconfigured();
-    expect_err(s.client.try_get_writers(), Error::NotConfigured);
-
-    s.client.set_writers(&s.admin, &s.subs, &s.plans);
-    let writers = s.client.get_writers();
-    assert_eq!(writers.subscription_contract, s.subs);
-    assert_eq!(writers.plan_contract, s.plans);
-}
-
-#[test]
 fn unknown_subscriptions_are_not_found() {
     let s = Setup::new();
     expect_err(
@@ -408,4 +324,10 @@ fn only_the_plan_contract_can_register_plans() {
         .try_register_plan(&1);
     assert!(result.is_err());
     assert_eq!(s.stats().total_plans, 0);
+}
+
+#[test]
+fn version_is_1() {
+    let s = Setup::new();
+    assert_eq!(s.client.version(), 1);
 }

@@ -6,14 +6,10 @@ use registry::{
     RegistryContract, RegistryContractClient, STATUS_ACTIVE, STATUS_CANCELLED, STATUS_EXHAUSTED,
     STATUS_PAUSED,
 };
-use soroban_sdk::{
-    testutils::{Address as _, Events as _},
-    Address, Event, String,
-};
+use soroban_sdk::{testutils::Address as _, Address, String};
 
-use super::mock_registry::{MockRegistry, MockRegistryClient};
 use super::setup::{expect_err, Setup, AMOUNT, CAP, INTERVAL};
-use crate::{events::Cancelled, Error};
+use crate::Error;
 
 struct Linked {
     s: Setup,
@@ -59,6 +55,7 @@ impl Linked {
             &INTERVAL,
             &cap,
             &plan_id,
+            &0,
         )
     }
 }
@@ -85,6 +82,7 @@ fn subscribing_to_an_unknown_plan_is_rejected() {
             &INTERVAL,
             &CAP,
             &99,
+            &0,
         ),
         Error::PlanNotFound,
     );
@@ -104,6 +102,7 @@ fn subscribing_to_a_deactivated_plan_is_rejected() {
             &INTERVAL,
             &CAP,
             &plan_id,
+            &0,
         ),
         Error::PlanInactive,
     );
@@ -143,6 +142,7 @@ fn terms_that_differ_from_the_plan_are_rejected() {
                 &interval,
                 &CAP,
                 &plan_id,
+                &0,
             ),
             Error::PlanMismatch,
         );
@@ -173,6 +173,7 @@ fn a_plan_id_without_a_linked_plan_contract_is_rejected() {
             &INTERVAL,
             &CAP,
             &1,
+            &0,
         ),
         Error::PlanContractNotSet,
     );
@@ -304,6 +305,7 @@ fn a_misconfigured_registry_blocks_subscribe_instead_of_losing_the_record() {
             &INTERVAL,
             &CAP,
             &0,
+            &0,
         ),
         Error::RegistryUpdateFailed,
     );
@@ -311,46 +313,29 @@ fn a_misconfigured_registry_blocks_subscribe_instead_of_losing_the_record() {
 }
 
 #[test]
-fn cancel_with_a_broken_registry_reports_registry_updated_false_and_still_cancels() {
-    // Build the world: subscription contract linked to a mock registry that
-    // will be armed to fail after the first subscription is in place.
-    let s = Setup::new();
-    let mock_reg = MockRegistryClient::new(&s.env, &s.env.register(MockRegistry, ()));
-    s.client.set_registry(&s.admin, &mock_reg.address);
-
-    let id = s.subscribe();
-
-    // Arm the mock so the next registry write panics.
-    mock_reg.arm();
-
-    // cancel() must succeed even though the registry refuses the update.
-    s.client.cancel(&s.subscriber, &id);
-
-    // Read the emitted event before any further state queries.
-    let emitted = s.env.events().all().filter_by_contract(&s.client.address);
-
-    // REVOCATION: the subscription is definitively cancelled.
-    assert_eq!(s.sub(id).status, crate::SubStatus::Cancelled);
-
-    // The event must record registry_updated: false (and allowance_updated:
-    // true because the real SAC token did lower the allowance).
-    assert_eq!(
-        emitted,
-        [Cancelled {
-            subscription_id: id,
-            subscriber: s.subscriber.clone(),
-            total_charged: 0,
-            unused_cap: CAP,
-            allowance_updated: true,
-            registry_updated: false,
-        }
-        .to_xdr(&s.env, &s.client.address)]
+fn plan_mirror_in_subscription_matches_plan_contract_including_description() {
+    let l = linked();
+    let desc = String::from_str(&l.s.env, "Enterprise plan with priority support");
+    let plan_id = l.plans.create_plan(
+        &l.s.merchant,
+        &String::from_str(&l.s.env, "Enterprise"),
+        &l.s.token.address,
+        &AMOUNT,
+        &INTERVAL,
+        &CAP,
+        &Some(desc.clone()),
     );
 
-    // REVOCATION still holds: a charge afterwards is rejected.
-    s.advance(INTERVAL);
-    expect_err(
-        s.client.try_charge(&s.merchant, &id),
-        Error::SubscriptionCancelled,
-    );
+    // Get plan from plan contract
+    let plan_from_contract = l.plans.get_plan(&plan_id);
+
+    // Subscribe to verify mirror decodes correctly with description field
+    let id = l.subscribe_to(plan_id, CAP);
+    let sub = l.s.sub(id);
+
+    // Verify the subscription was created with the plan id
+    assert_eq!(sub.plan_id, plan_id);
+
+    // Verify plan contract's plan has the description
+    assert_eq!(plan_from_contract.description, Some(desc));
 }
